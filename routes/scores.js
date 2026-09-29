@@ -6,8 +6,8 @@ function sumCriteria(criteria){
     return Object.values(criteria || {}).reduce((sum,v) => sum + (Number(v)||0),0); 
 }
 
-function getRequiredCriteriaIds(config, categoryName, includeAbstract){
-    const catehory =config.categories.find((c)=>c.name===categoryName);
+function getRequiredCriteriaIds(config, categoryName, includesAbstract){
+    const category =config.categories.find((c)=>c.name===categoryName);
     if(!category) return [];
 
     const ids =category.rubric.criteria.map((c)=>c.id);
@@ -42,7 +42,7 @@ router.post('/',async (req,res)=>{
             const requiredIds =getRequiredCriteriaIds(config, presentation.category, includes_abstract || false);
             const missingids =requiredIds.filter((id)=> !(id in criteria));
             if(missingids.length>0){
-                return res.status(400).send(`Missing required criteria: ${missingIds.join(', ')}`);
+                return res.status(400).send(`Missing required criteria: ${missingids.join(', ')}`);
             }
         }
 

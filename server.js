@@ -4,7 +4,7 @@ const judgesRouter =require('./routes/judges');
 const presentationRouter =require('./routes/presentations');
 const scoresRouter=require('./routes/scores');
 const configRouter = require('./routes/config');
-
+const leaderboardRouter=require('./routes/leaderboard');
 
 const app =express();
 const PORT =3000;
@@ -12,6 +12,7 @@ const PORT =3000;
 app.use(express.json());
 app.use('/api/judges',judgesRouter);
 app.use('/api/presentations',presentationRouter);
+app.use('/api/leaderboard',leaderboardRouter);
 app.use('/api/config',configRouter);
 app.use('/api/scores',scoresRouter);
 

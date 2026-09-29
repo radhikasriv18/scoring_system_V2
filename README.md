@@ -24,10 +24,21 @@ Judge / Admin browser
 - **Frontend**: plain HTML/JS (no build step), lives in `frontend/`
 - **Backend**: Node.js + Express, in `server.js` and `routes/`
 - **Database**: PostgreSQL, schema in `db/schema.sql`
-- **Deployment target**: a university-provided VM (replacing Supabase Cloud +
-  Netlify). Nothing in the code is hardcoded to a specific host — all
-  connection details come from environment variables (`.env`), so moving to
-  the VM is a configuration change, not a code change.
+- **Deployment target**: a university-provided VM (Ubuntu, BGSU CS
+  department), replacing Supabase Cloud + Netlify. Nothing in the code is
+  hardcoded to a specific host — all connection details come from
+  environment variables (`.env`), so moving to the VM is a configuration
+  change, not a code change.
+- **Deployment method**: direct install on the VM (PostgreSQL, Node.js,
+  Caddy installed straight onto Ubuntu via sudo access) — **not** Docker.
+  An earlier local Docker proof-of-concept was built to estimate resource
+  usage for the initial VM request, but the actual application has been
+  built and tested entirely without Docker, and direct install was chosen
+  for the real deployment to keep the VM setup consistent with local
+  development and avoid the extra container-networking configuration
+  Docker would introduce (mapping ports so the public subdomain correctly
+  reaches the app) under a tight event deadline. The team (Radhika,
+  Shubham, Mohammed Shakeel) has sudo access on the VM.
 
 ---
 
@@ -170,14 +181,30 @@ Body: `{ judge_id, presentation_id, criteria, open_ended_answers?, includes_abst
 1. Validates `judge_id`, `presentation_id`, and at least one criterion are present.
 2. Confirms the judge exists (`404` if not).
 3. Confirms the presentation exists (`404` if not).
-4. Rejects with `409` if this judge has already scored this presentation.
-5. Recalculates `total` from `criteria` server-side.
-6. Inserts and returns the new score row.
+4. Validates that *all* required criteria for the presentation's category
+   are present in `criteria` — the category's normal rubric criteria, plus
+   the abstract criterion only when `includes_abstract` is true. Looks up
+   the category's rubric from `symposium_config`. Rejects with `400` and
+   names the specific missing criterion/criteria if any are absent.
+5. Rejects with `409` if this judge has already scored this presentation.
+6. Recalculates `total` from `criteria` server-side.
+7. Inserts and returns the new score row.
 
-**Not yet implemented:** validation that *all* required criteria (per the
-category's rubric in `symposium_config`, plus the abstract criterion only
-when `includes_abstract` is true) were actually rated — currently only
-"at least one criterion" is enforced. See Open Items.
+### `GET /api/judges`, `GET /api/presentations`, `GET /api/scores`
+Return every row in the respective table, newest first.
+
+### `GET /api/config`
+Returns the current `symposium_config` row, or `null` if none exists yet
+(first-run state — not treated as an error).
+
+### `GET /api/leaderboard`
+Returns the top 5 presentations per category, ranked by average
+fairness-scaled score. For each score, computes
+`total × (category's normal criteria count ÷ criteria actually rated)` to
+account for judges who rated an extra (abstract) criterion, then averages
+that scaled score across every judge who scored a given presentation, then
+sorts descending and takes the top 5 per category. Response shape:
+`{ [categoryName]: [{ presentationNumber, timeSlot, discipline, averageScaledScore, judgeCount }] }`.
 
 ---
 
@@ -186,21 +213,24 @@ when `includes_abstract` is true) were actually rated — currently only
 - **Admin authentication** (JWT-based login) — required before any
   admin-only route (editing/deleting scores, updating config) can be built
   safely. Judges intentionally have no login (see design decision above).
-- **Full criteria validation** — reject a score submission if it's missing
-  any criterion required by that category's current rubric (see `symposium_config`),
-  accounting for the conditional abstract criterion.
-- **GET routes** — retrieving judges/presentations/scores for the admin
-  dashboard, leaderboard, and Excel export (only creation is built so far).
+- **`PUT /api/config`** — updating the config (admin-only, blocked on auth above).
 - **Admin score-edit route** — an `UPDATE` path, gated by admin auth, for
   correcting a judge's submitted score (the judge-facing route is
   intentionally insert-only).
+- **Judge workload route** — how many presentations each judge has scored,
+  flagging possible duplicates (ported from the old `admin.js` workload tab).
+- **Excel export** — PosterPresentations / OralPresentations /
+  VideoPresentations sheets matching the university's template (ported from
+  old `admin.js` `buildTemplateSheetData`).
+- **Danger Zone** — admin-only "delete all scores" with typed confirmation.
 - **Frontend integration** — pointing the existing `index.html`/`app.js`
   (judge-facing) and `admin.html`/`admin.js` (admin dashboard) at this API
   instead of Supabase. Currently, the API has been built and tested via
   Postman/curl only.
-- **Deployment to the university VM** — install Node, Postgres, and
-  (likely) Caddy as a reverse proxy for HTTPS; copy `.env.example`, fill in
-  real VM values, run the schema file against the VM's Postgres instance.
+- **Deployment to the university VM** — install PostgreSQL, Node.js, and
+  Caddy directly on the VM (no Docker — see Architecture overview above);
+  copy `.env.example`, fill in real VM values; run `db/schema.sql` and
+  `db/seed-config.sql` against the VM's Postgres instance.
 
 ---
 
