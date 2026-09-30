@@ -3,3 +3,4 @@ DB_PASSWORD=yourpasswordhere
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=scoring_system_dev
+JWT_SECRET=your_secret_key_here

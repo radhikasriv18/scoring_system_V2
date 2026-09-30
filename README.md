@@ -206,31 +206,168 @@ that scaled score across every judge who scored a given presentation, then
 sorts descending and takes the top 5 per category. Response shape:
 `{ [categoryName]: [{ presentationNumber, timeSlot, discipline, averageScaledScore, judgeCount }] }`.
 
+### `GET /api/workload`
+Returns, per judge, how many presentations they've scored, broken down by
+category, plus a total. Response: a list of
+`{ judgeId, judgeName, counts: { [categoryName]: count }, total }`.
+Note: the old app's duplicate-detection in this feature was deliberately
+dropped — the `UNIQUE(judge_id, presentation_id)` constraint already
+prevents the scenario it used to flag.
+
+### `GET /api/scores?judge_id=X` / `GET /api/scores?category=Y`
+The scores GET route now supports optional query-string filters — by
+judge, by category (joins to `presentations` for category, since that
+column isn't on `scores` itself), or both together. Built to support a
+judge-facing "you're done scoring" summary (what has this judge scored so
+far). Marked for later revisit in the concepts reference doc — the
+dynamic query-building and the `JOIN` weren't slowed down on given the
+deadline.
+
+### `POST /api/admin/login`
+Body: `{ username, password }`. Checks the password against a bcrypt hash
+in the `admins` table; on success, returns `{ token }` — a JWT, valid 8
+hours, to be sent as `Authorization: Bearer <token>` on every subsequent
+admin-only request. No public signup route exists by design — admin
+accounts are seeded directly (see "Seeding an admin account" below), since
+only a small, known set of people (Radhika, and whoever she adds) need
+admin access.
+
+### `PUT /api/config` — **admin-only**
+Body: `{ config }` — the entire config object (replaces whatever's
+currently stored; there is no partial-update). Used for editing the
+conference title, any category's rubric/criteria, disciplines, time slots,
+etc. Gated by `middleware/requireAdmin.js`.
+
+### `PUT /api/scores/:id` — **admin-only**
+Body: `{ criteria, open_ended_answers?, includes_abstract? }`. Corrects an
+already-submitted score — recalculates `total` server-side, same as
+creation. This is the only way a submitted score can change; judges cannot
+edit their own submissions once made (see design decision above).
+
+### `DELETE /api/scores/:id` — **admin-only**
+Deletes a single score.
+
+### `DELETE /api/scores/reset-all` — **admin-only**
+Full event reset: deletes every score, judge, AND presentation — a
+deliberate decision (a "fresh start" for a new event means all three, not
+just scores). Deletes in foreign-key-safe order (scores first). **Route
+ordering matters here**: this route is defined *before*
+`DELETE /api/scores/:id` in the file, because Express matches routes
+top-to-bottom and a `/:id` wildcard would otherwise treat the literal text
+"reset-all" as an id and swallow this request first. Any future route
+mixing a wildcard param with a specific named path needs the same care.
+
+### `GET /api/export/excel` — **admin-only**
+Builds and downloads an `.xlsx` workbook with one sheet per category
+(PosterPresentations, OralPresentations, VideoPresentations), matching the
+university's template — one column per judge, one row per presentation,
+each cell the judge's fairness-scaled score, plus TOTAL SCORE / NumberOf
+Judges / MEAN SCORE per row. Ported from the old `admin.js`
+`buildTemplateSheetData`, reading from Postgres instead of localStorage.
+Poster's row label is the presentation number; Oral/Video's is the time
+slot, since this event doesn't assign them numbers (column headers say
+"POSTER#" vs "TIME SLOT" accordingly — update if a future event gives
+Oral/Video real numbers again).
+
 ---
 
 ## Open items / not yet built
 
-- **Admin authentication** (JWT-based login) — required before any
-  admin-only route (editing/deleting scores, updating config) can be built
-  safely. Judges intentionally have no login (see design decision above).
-- **`PUT /api/config`** — updating the config (admin-only, blocked on auth above).
-- **Admin score-edit route** — an `UPDATE` path, gated by admin auth, for
-  correcting a judge's submitted score (the judge-facing route is
-  intentionally insert-only).
-- **Judge workload route** — how many presentations each judge has scored,
-  flagging possible duplicates (ported from the old `admin.js` workload tab).
-- **Excel export** — PosterPresentations / OralPresentations /
-  VideoPresentations sheets matching the university's template (ported from
-  old `admin.js` `buildTemplateSheetData`).
-- **Danger Zone** — admin-only "delete all scores" with typed confirmation.
+- **Admin: merge duplicate score entries** — ported from the old
+  `admin.js` MergePanel, if still needed (the new schema's
+  `UNIQUE(judge_id, presentation_id)` prevents the exact scenario the old
+  merge tool handled, so this may not be necessary — evaluate before building).
+- **Danger Zone frontend safeguard** — the backend reset-all route exists
+  and is tested; the typed "DELETE ALL SCORES" confirmation UI from the old
+  app is a frontend concern, not yet built.
 - **Frontend integration** — pointing the existing `index.html`/`app.js`
   (judge-facing) and `admin.html`/`admin.js` (admin dashboard) at this API
-  instead of Supabase. Currently, the API has been built and tested via
-  Postman/curl only.
-- **Deployment to the university VM** — install PostgreSQL, Node.js, and
-  Caddy directly on the VM (no Docker — see Architecture overview above);
-  copy `.env.example`, fill in real VM values; run `db/schema.sql` and
-  `db/seed-config.sql` against the VM's Postgres instance.
+  instead of Supabase. Currently, the entire API has been built and tested
+  via Postman/curl only — no real page has called any of it yet. This
+  includes building the "Score Another / I'm Done" judge-facing flow (using
+  the new `GET /api/scores?judge_id=X` filter for the summary).
+- **Deployment to the university VM** — see "Deploying to the VM" below for
+  the concrete checklist once resources are available.
+
+---
+
+## Deploying to the VM — what to configure once resources are available
+
+The university (Lisa Weihl, BGSU CS) is provisioning an Ubuntu VM with
+sudo access for the team (Radhika, Shubham, Mohammed Shakeel) and a
+subdomain (`https://csvmXX.cs.bgsu.edu`). Everything below is installed
+**directly** on the VM — no Docker (see Architecture overview above for why).
+
+### 1. Install the stack
+```
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+sudo apt install nodejs npm
+sudo apt install caddy
+```
+(Exact package names/commands may need adjusting depending on the Ubuntu
+version — verify against current Ubuntu/PostgreSQL/Node docs at the time.)
+
+### 2. Get the project onto the VM
+Either `git clone` a repository (recommended — set one up before deployment
+if it doesn't exist yet) or transfer the project files directly. Do **not**
+copy `node_modules/` or `.env` — those are excluded by `.gitignore` and
+should never be committed or transferred as-is.
+
+### 3. Install dependencies fresh on the VM
+```
+npm install
+```
+This reads `package.json` and reinstalls every package used so far:
+`express`, `pg`, `dotenv`, `bcrypt`, `jsonwebtoken`, `xlsx`.
+
+### 4. Create the database and real `.env`
+```
+sudo -u postgres createdb scoring_system_prod
+```
+Copy `.env.example` to `.env` and fill in the VM's real values — **not**
+`localhost` for `DB_HOST` unless Postgres and the app run on the same
+machine (they likely will here). Generate a genuinely random, long
+`JWT_SECRET` for production — do not reuse the local development one.
+
+### 5. Run the schema and seed the real config
+```
+psql -U postgres -d scoring_system_prod -f db/schema.sql
+psql -U postgres -d scoring_system_prod -f db/seed-config.sql
+```
+
+### 6. Seed the real admin account(s)
+No signup route exists by design. Generate a bcrypt hash for each real
+admin's chosen password:
+```
+node -e "const bcrypt = require('bcrypt'); bcrypt.hash('CHOOSE_A_REAL_PASSWORD', 10, (err, hash) => console.log(hash));"
+```
+Then insert each admin directly:
+```
+psql -U postgres -d scoring_system_prod -c "INSERT INTO admins (username, password_hash) VALUES ('real_username', 'paste_the_hash_here');"
+```
+**Use a genuinely strong password for production** — the local dev
+account's password was chosen for convenience during testing, not security.
+
+### 7. Run the server persistently
+`node server.js` run directly will stop the moment the SSH session
+disconnects. For a real deployment, use a process manager — **PM2** is the
+common choice — so the server keeps running and restarts automatically if
+it crashes. (Not yet set up or decided on; a specific `pm2` install/config
+step should be worked out before the live event, not improvised on the day.)
+
+### 8. Configure Caddy for HTTPS
+Point Caddy at the Express server (port 3000) so
+`https://csvmXX.cs.bgsu.edu` correctly reaches it, and so Caddy handles
+HTTPS automatically. (Specific Caddyfile configuration not yet written —
+do this once the VM and subdomain are confirmed active.)
+
+### 9. Test everything end-to-end on the VM before the live event
+At minimum: judge submits a score, admin logs in, admin edits a score,
+leaderboard/workload/export all return correct data, and — critically —
+test this on the VM itself, not just locally, since the whole point of
+this checklist is catching anything that behaves differently in a fresh
+environment.
 
 ---
 
