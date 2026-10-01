@@ -7,6 +7,7 @@ const configRouter = require('./routes/config');
 const leaderboardRouter=require('./routes/leaderboard');
 const workloadRouter =require('./routes/workload');
 const adminAuthRouter =require('./routes/adminAuth');
+const exportRouter =require('./routes/export');
 
 
 const app =express();
@@ -14,6 +15,7 @@ const PORT =3000;
 
 app.use(express.json());
 app.use('/api/judges',judgesRouter);
+app.use('/api/export',exportRouter);
 app.use('/api/presentations',presentationRouter);
 app.use('/api/workload',workloadRouter);
 app.use('/api/leaderboard',leaderboardRouter);
