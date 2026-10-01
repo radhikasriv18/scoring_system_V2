@@ -42,3 +42,10 @@ CREATE TABLE symposium_config (
     id SERIAL PRIMARY KEY,
     config JSONB NOT NULL
 );
+
+CREATE TABLE admins (
+    id SERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
