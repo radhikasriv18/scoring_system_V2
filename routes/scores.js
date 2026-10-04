@@ -64,16 +64,58 @@ router.post('/', async (req, res) => {
       [judge_id, presentation_id, criteria, open_ended_answers || {}, includes_abstract || false, total]
     );
 
+    // Scoring again means this judge isn't finished after all, so clear
+    // their "finished" mark (set by PUT /api/judges/:id/finished).
+    await pool.query('UPDATE judges SET finished_at = NULL WHERE id = $1', [judge_id]);
+
     res.status(201).json(result.rows[0]);
   } catch (err) {
     res.status(500).send(`Failed to create score: ${err.message}`);
   }
 });
 
-// GET /api/scores — list all scores, newest first.
+// GET /api/scores — list scores, newest first. Optional filters:
+// ?judge_id=X and/or ?category=Y. Every score comes back with its
+// presentation and judge details attached, so callers don't have to look
+// those up separately.
 router.get('/', async (req, res) => {
+  const { judge_id, category } = req.query;
+
   try {
-    const result = await pool.query('SELECT * FROM scores ORDER BY submitted_at DESC');
+    let query = `
+      SELECT scores.*,
+             presentations.category,
+             presentations.presentation_number,
+             presentations.time_slot,
+             presentations.room,
+             presentations.session,
+             presentations.discipline,
+             judges.code AS judge_code,
+             judges.first_name AS judge_first_name,
+             judges.last_name AS judge_last_name
+      FROM scores
+      JOIN presentations ON scores.presentation_id = presentations.id
+      JOIN judges ON scores.judge_id = judges.id`;
+    const conditions = [];
+    const values = [];
+
+    if (judge_id) {
+      values.push(judge_id);
+      conditions.push(`scores.judge_id = $${values.length}`);
+    }
+
+    if (category) {
+      values.push(category);
+      conditions.push(`presentations.category = $${values.length}`);
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    query += ' ORDER BY scores.submitted_at DESC';
+
+    const result = await pool.query(query, values);
     res.json(result.rows);
   } catch (err) {
     res.status(500).send(`Failed to fetch scores: ${err.message}`);
@@ -145,38 +187,6 @@ router.delete('/:id', requireAdmin, async (req, res) => {
     res.json({ deleted: result.rows[0] });
   } catch (err) {
     res.status(500).send(`Failed to delete score: ${err.message}`);
-  }
-});
-
-router.get('/', async (req, res) => {
-  const { judge_id, category } = req.query;
-
-  try {
-    let query = 'SELECT scores.* FROM scores';
-    const conditions = [];
-    const values = [];
-
-    if (judge_id) {
-      values.push(judge_id);
-      conditions.push(`scores.judge_id = $${values.length}`);
-    }
-
-    if (category) {
-      query = 'SELECT scores.* FROM scores JOIN presentations ON scores.presentation_id = presentations.id';
-      values.push(category);
-      conditions.push(`presentations.category = $${values.length}`);
-    }
-
-    if (conditions.length > 0) {
-      query += ' WHERE ' + conditions.join(' AND ');
-    }
-
-    query += ' ORDER BY scores.submitted_at DESC';
-
-    const result = await pool.query(query, values);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).send(`Failed to fetch scores: ${err.message}`);
   }
 });
 

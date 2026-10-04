@@ -1,7 +1,7 @@
 -- Replaces the placeholder symposium_config row with the real rubric
 -- content, matching the old app's buildDefaultConfig(). Run this against
 -- scoring_system_dev once the placeholder row already exists.
-
+\encoding UTF8
 INSERT INTO symposium_config (config)
 VALUES( '{
   "conferenceTitle": "Embracing Global Engagement",

@@ -6,9 +6,9 @@ CREATE TABLE judges (
     code TEXT UNIQUE NOT NULL,
     first_name TEXT NOT NULL,
     last_name TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT now(),
+    finished_at TIMESTAMPTZ
 );
-
 -- Presentations: one row per presention. A (number, category) pair must be unique.
 
 CREATE TABLE presentations(
