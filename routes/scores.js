@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool');
 const requireAdmin = require('../middleware/requireAdmin');
+const { findOrCreatePresentation } = require('../services/presentations');
 
 function sumCriteria(criteria) {
   return Object.values(criteria || {}).reduce((sum, v) => sum + (Number(v) || 0), 0);
@@ -17,6 +18,23 @@ function getRequiredCriteriaIds(config, categoryName, includesAbstract) {
   }
   return ids;
 }
+
+// A score with its presentation and judge details attached. Used by the
+// list (GET) and as the reply to an edit (PUT), so both give the same shape.
+const SCORE_DETAILS_SQL = `
+  SELECT scores.*,
+         presentations.category,
+         presentations.presentation_number,
+         presentations.time_slot,
+         presentations.room,
+         presentations.session,
+         presentations.discipline,
+         judges.code AS judge_code,
+         judges.first_name AS judge_first_name,
+         judges.last_name AS judge_last_name
+  FROM scores
+  JOIN presentations ON scores.presentation_id = presentations.id
+  JOIN judges ON scores.judge_id = judges.id`;
 
 // POST /api/scores — create a new score.
 router.post('/', async (req, res) => {
@@ -76,26 +94,12 @@ router.post('/', async (req, res) => {
 
 // GET /api/scores — list scores, newest first. Optional filters:
 // ?judge_id=X and/or ?category=Y. Every score comes back with its
-// presentation and judge details attached, so callers don't have to look
-// those up separately.
+// presentation and judge details attached.
 router.get('/', async (req, res) => {
   const { judge_id, category } = req.query;
 
   try {
-    let query = `
-      SELECT scores.*,
-             presentations.category,
-             presentations.presentation_number,
-             presentations.time_slot,
-             presentations.room,
-             presentations.session,
-             presentations.discipline,
-             judges.code AS judge_code,
-             judges.first_name AS judge_first_name,
-             judges.last_name AS judge_last_name
-      FROM scores
-      JOIN presentations ON scores.presentation_id = presentations.id
-      JOIN judges ON scores.judge_id = judges.id`;
+    let query = SCORE_DETAILS_SQL;
     const conditions = [];
     const values = [];
 
@@ -122,11 +126,18 @@ router.get('/', async (req, res) => {
   }
 });
 
-// PUT /api/scores/:id — admin-only. Corrects an existing score.
+// PUT /api/scores/:id — admin-only. Corrects an existing score. Optionally
+// also moves it to a different presentation (fixing a typo'd number or time
+// slot) when the body includes `presentation`. A Poster-style score keeps
+// being identified by number and an Oral/Video score by time slot, and the
+// category can't be changed here. Replies with the full updated score.
 router.put('/:id', requireAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { criteria, open_ended_answers, includes_abstract } = req.body;
+  const id = Number(req.params.id);
+  const { criteria, open_ended_answers, includes_abstract, presentation } = req.body;
 
+  if (!Number.isInteger(id)) {
+    return res.status(400).send('Invalid score id.');
+  }
   if (!criteria || Object.keys(criteria).length === 0) {
     return res.status(400).send('criteria is required.');
   }
@@ -136,19 +147,59 @@ router.put('/:id', requireAdmin, async (req, res) => {
     if (existing.rows.length === 0) {
       return res.status(404).send('No score found with that id.');
     }
+    const score = existing.rows[0];
+
+    let presentationId = score.presentation_id;
+
+    if (presentation) {
+      const currentResult = await pool.query('SELECT * FROM presentations WHERE id = $1', [score.presentation_id]);
+      const current = currentResult.rows[0];
+      const numberBased = Boolean(current.presentation_number);
+
+      if (numberBased && !/^\d+$/.test(String(presentation.presentation_number || '').trim())) {
+        return res.status(400).send('Presentation number must be a whole number.');
+      }
+      if (!numberBased && !presentation.time_slot) {
+        return res.status(400).send('A time slot is required.');
+      }
+
+      const { presentation: target } = await findOrCreatePresentation({
+        category: current.category,
+        presentation_number: numberBased ? presentation.presentation_number : null,
+        time_slot: numberBased ? null : presentation.time_slot,
+        room: numberBased ? null : presentation.room,
+        session: numberBased ? null : presentation.session,
+        discipline: current.discipline,
+      });
+
+      if (target.id !== current.id) {
+        // A judge can only have one score per presentation.
+        const clash = await pool.query(
+          'SELECT id FROM scores WHERE judge_id = $1 AND presentation_id = $2 AND id <> $3',
+          [score.judge_id, target.id, id]
+        );
+        if (clash.rows.length > 0) {
+          return res.status(409).send('This judge already has a score for that presentation.');
+        }
+        presentationId = target.id;
+      }
+    }
 
     const total = sumCriteria(criteria);
 
-    const result = await pool.query(
+    await pool.query(
       `UPDATE scores
-       SET criteria = $1, open_ended_answers = $2, includes_abstract = $3, total = $4
-       WHERE id = $5
-       RETURNING *`,
-      [criteria, open_ended_answers || {}, includes_abstract || false, total, id]
+       SET criteria = $1, open_ended_answers = $2, includes_abstract = $3, total = $4, presentation_id = $5
+       WHERE id = $6`,
+      [criteria, open_ended_answers || {}, includes_abstract || false, total, presentationId, id]
     );
 
-    res.json(result.rows[0]);
+    const updated = await pool.query(`${SCORE_DETAILS_SQL} WHERE scores.id = $1`, [id]);
+    res.json(updated.rows[0]);
   } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).send('This judge already has a score for that presentation.');
+    }
     res.status(500).send(`Failed to update score: ${err.message}`);
   }
 });

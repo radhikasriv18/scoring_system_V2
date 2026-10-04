@@ -1,78 +1,89 @@
-const express= require('express');
+const express = require('express');
 const router = express.Router();
-const pool =require('../db/pool');
+const pool = require('../db/pool');
+const requireAdmin = require('../middleware/requireAdmin');
 
-//Given a score row and its category's config, return the fairness-scaled score
-// total * (normal criteria count/criteria actually rated).
-
+// Fairness scaling: a judge who rated one extra criterion (the abstract)
+// would otherwise get a higher raw total than judges who didn't, so their
+// total is scaled back to the category's normal number of criteria:
+//   total x (normal criteria count / criteria actually rated)
 function computeScaledScore(scoreRow, categoryConfig) {
-    const ratedCount =Object.keys(scoreRow.criteria ||{} ).length;
-    if(ratedCount === 0) return 0;
-    const normalCount =categoryConfig?categoryConfig.rubric.criteria.length :ratedCount;
-    console.log('INSIDE FUNCTION:', { total: scoreRow.total, normalCount, ratedCount });
-    return scoreRow.total*(normalCount/ratedCount);
+  const ratedCount = Object.keys(scoreRow.criteria || {}).length;
+  if (ratedCount === 0) return 0;
+  const normalCount = categoryConfig ? categoryConfig.rubric.criteria.length : ratedCount;
+  return scoreRow.total * (normalCount / ratedCount);
 }
 
-router.get('/',async(req,res)=>{
-    try{
-        const scoresResult = await pool.query('SELECT * FROM scores');
-        const presentationsResult =await pool.query('SELECT * FROM presentations');
-        const configResult =await pool.query('SELECT * FROM symposium_config LIMIT 1');
-      
-        const scores=scoresResult.rows;
-        const presentationsById ={};
-        presentationsResult.rows.forEach((p)=>{
-            presentationsById[p.id]=p;
+// GET /api/leaderboard — admin-only. Every scored presentation, grouped by
+// category and ranked by its average scaled score across the judges who
+// scored it (highest first). Not cut off at 5: the dashboard decides how
+// many to show, so a tie at the boundary isn't lost.
+// Shape: { "Poster": [ { presentationId, presentationNumber, timeSlot,
+//   room, session, discipline, averageScaledScore, judgeCount }, ... ] }
+router.get('/', requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT scores.presentation_id,
+             scores.criteria,
+             scores.total,
+             presentations.category,
+             presentations.presentation_number,
+             presentations.time_slot,
+             presentations.room,
+             presentations.session,
+             presentations.discipline
+      FROM scores
+      JOIN presentations ON scores.presentation_id = presentations.id`);
+
+    const configResult = await pool.query('SELECT * FROM symposium_config LIMIT 1');
+    const config = configResult.rows.length > 0 ? configResult.rows[0].config : { categories: [] };
+
+    // Collect every judge's scaled score for each presentation.
+    const groups = new Map();
+    result.rows.forEach((row) => {
+      const categoryConfig = config.categories.find((c) => c.name === row.category);
+      const scaled = computeScaledScore(row, categoryConfig);
+
+      if (!groups.has(row.presentation_id)) {
+        groups.set(row.presentation_id, {
+          presentationId: row.presentation_id,
+          category: row.category,
+          presentationNumber: row.presentation_number,
+          timeSlot: row.time_slot,
+          room: row.room,
+          session: row.session,
+          discipline: row.discipline,
+          scaledScores: [],
         });
+      }
+      groups.get(row.presentation_id).scaledScores.push(scaled);
+    });
 
-        const config =configResult.rows.length>0?configResult.rows[0].config : {categories:[]};
+    // Average per presentation, then bucket by category.
+    const leaderboard = {};
+    groups.forEach((group) => {
+      const average = group.scaledScores.reduce((a, b) => a + b, 0) / group.scaledScores.length;
+      if (!leaderboard[group.category]) leaderboard[group.category] = [];
+      leaderboard[group.category].push({
+        presentationId: group.presentationId,
+        presentationNumber: group.presentationNumber,
+        timeSlot: group.timeSlot,
+        room: group.room,
+        session: group.session,
+        discipline: group.discipline,
+        averageScaledScore: average,
+        judgeCount: group.scaledScores.length,
+      });
+    });
 
-        //Group scaled scores by presentation.
-        const groups={};
-        scores.forEach((score)=>{
-            const presentation =presentationsById[score.presentation_id];
-            if(!presentation) return;
+    Object.keys(leaderboard).forEach((category) => {
+      leaderboard[category].sort((a, b) => b.averageScaledScore - a.averageScaledScore);
+    });
 
-            const categoryConfig =config.categories.find((c)=>c.name===presentation.category);
-            const scaled =computeScaledScore(score, categoryConfig);
-            console.log('DEBUG:', { total: score.total, ratedCount: Object.keys(score.criteria || {}).length, categoryConfig: !!categoryConfig, scaled });
-
-            const key=presentation.id;
-            if(!groups[key]){
-                groups[key]={
-                    presentationId:presentation.id,
-                    presentationNumber:presentation.presentation_Number,
-                    timeSlot:presentation.time_Slot,
-                    category:presentation.category,
-                    discipline:presentation.discipline,
-                    scaledScores: [],
-                };
-            }
-            groups[key].scaledScores.push(scaled);
-
-        });
-
-        const leaderboard={};
-        Object.values(groups).forEach((group)=>{
-            const average=group.scaledScores.reduce((a,b)=>a+b,0)/group.scaledScores.length;
-            if(!leaderboard[group.category]) leaderboard[group.category]=[];
-            leaderboard[group.category].push({
-                presentationNumber:group.presentationNumber,
-                timeSlot: group.timeSlot,
-                discipline: group.discipline,
-                averageScaledScore: average,
-                judgeCount:group.scaledScores.length,
-            });
-        });
-
-        Object.keys(leaderboard).forEach((category)=>{
-            leaderboard[category].sort((a,b)=>b.averageScaledScore-a.averageScaledScore);
-            leaderboard[category]=leaderboard[category].slice(0,5);
-        });
-        res.json(leaderboard);
-    } catch(err){
-        res.status(500).send(`Failed to build leaderboard: ${err.message}`);
-    }
+    res.json(leaderboard);
+  } catch (err) {
+    res.status(500).send(`Failed to build leaderboard: ${err.message}`);
+  }
 });
 
-module.exports=router;
+module.exports = router;

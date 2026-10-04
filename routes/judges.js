@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool');
+const requireAdmin = require('../middleware/requireAdmin');
 
 // POST /api/judges — create a new judge, or return the existing one if the
 // code already exists.
@@ -38,6 +39,35 @@ router.get('/', async (req, res) => {
     res.json(result.rows);
   } catch (err) {
     res.status(500).send(`Failed to fetch judges: ${err.message}`);
+  }
+});
+
+// PUT /api/judges/:id — admin-only. Fixes a judge's name (for example a
+// typo from their first sign-in, since the name saved first is the one
+// that stays). The code never changes: it's what identifies the judge.
+router.put('/:id', requireAdmin, async (req, res) => {
+  const id = Number(req.params.id);
+  const firstName = typeof req.body.first_name === 'string' ? req.body.first_name.trim() : '';
+  const lastName = typeof req.body.last_name === 'string' ? req.body.last_name.trim() : '';
+
+  if (!Number.isInteger(id)) {
+    return res.status(400).send('Invalid judge id.');
+  }
+  if (!firstName || !lastName) {
+    return res.status(400).send('first_name and last_name are required.');
+  }
+
+  try {
+    const result = await pool.query(
+      'UPDATE judges SET first_name = $1, last_name = $2 WHERE id = $3 RETURNING *',
+      [firstName, lastName, id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).send('No judge found with that id.');
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).send(`Failed to update judge: ${err.message}`);
   }
 });
 
