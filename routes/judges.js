@@ -28,6 +28,13 @@ router.post('/', async (req, res) => {
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
+    // Same code signing in on two devices at the same moment: the second
+    // insert hits the UNIQUE rule on code. The judge exists now, so return
+    // them, exactly as if they had signed in a moment later.
+    if (err.code === '23505') {
+      const again = await pool.query('SELECT * FROM judges WHERE code = $1', [code]);
+      return res.json(again.rows[0]);
+    }
     res.status(500).send(`Error creating judge: ${err.message}`);
   }
 });

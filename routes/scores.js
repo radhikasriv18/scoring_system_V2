@@ -87,7 +87,14 @@ router.post('/', async (req, res) => {
     await pool.query('UPDATE judges SET finished_at = NULL WHERE id = $1', [judge_id]);
 
     res.status(201).json(result.rows[0]);
-  } catch (err) {
+  }  catch (err) {
+    // Two identical submissions at the same moment (double-tap, or retry
+    // sync while the first request is still in flight): both pass the
+    // "already scored?" check, the database rejects the second insert
+    // with code 23505. The score IS saved, so this is a 409, not a crash.
+    if (err.code === '23505') {
+      return res.status(409).send('You have already scored this presentation.');
+    }
     res.status(500).send(`Failed to create score: ${err.message}`);
   }
 });
